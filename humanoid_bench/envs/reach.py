@@ -35,8 +35,6 @@ class Reach(Task):
         self.target_high = np.array([2, 2, 2.0])
         self.goal = np.zeros(3)
 
-        self._env.viewer = self._env.mujoco_renderer._get_viewer(self._env.render_mode)
-
     @property
     def observation_space(self):
         return Box(
@@ -81,6 +79,10 @@ class Reach(Task):
         return self.get_obs()
 
     def render(self):
+        if not hasattr(self._env, "viewer"):
+            self._env.viewer = self._env.mujoco_renderer._get_viewer(
+                self._env.render_mode
+            )
         found = False
         for i in range(len(self._env.viewer._markers)):
             if self._env.viewer._markers[i]["objid"] == 789:
