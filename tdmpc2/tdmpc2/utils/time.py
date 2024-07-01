@@ -1,18 +1,21 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 
-def get_current_datetime_str(no_micro: Optional[bool] = False) -> str:
-    return datetime.now().strftime(
-        "%m-%d:%H:%M:%S:%f" if not no_micro else "%m-%d:%H:%M:%S"
+def get_current_datetime_str(no_micro: Optional[bool] = False) -> Tuple[str, datetime]:
+    _time = datetime.now()
+    return (
+        _time.strftime("%m-%d:%H:%M:%S:%f" if not no_micro else "%m-%d:%H:%M:%S"),
+        _time,
     )
 
 
-def get_current_ms() -> str:
-    return datetime.now().strftime("%f")
+def get_current_ms() -> Tuple[str, datetime]:
+    _time = datetime.now()
+    return _time.strftime("%f"), _time
 
 
-start_time_str = get_current_datetime_str()
+start_time_str, start_time = get_current_datetime_str()
 
 
 class Timeit:

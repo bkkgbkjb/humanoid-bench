@@ -5,6 +5,8 @@ import torch
 from tensordict.tensordict import TensorDict
 
 from tdmpc2.trainer.base import Trainer
+from tdmpc2.utils.progress import TqdmBar, tqdm
+from tdmpc2.utils.reporter import init_reporter, get_reporter
 
 
 class OnlineTrainer(Trainer):
@@ -43,7 +45,7 @@ class OnlineTrainer(Trainer):
             ep_successes.append(info["success"])
             if self.cfg.save_video:
                 # self.logger.video.save(self._step)
-                self.logger.video.save(self._step, key='results/video')
+                self.logger.video.save(self._step, key="results/video")
         return dict(
             episode_reward=np.nanmean(ep_rewards),
             episode_success=np.nanmean(ep_successes),
@@ -72,61 +74,70 @@ class OnlineTrainer(Trainer):
     def train(self):
         """Train a TD-MPC2 agent."""
         train_metrics, done, eval_next = {}, True, True
-        while self._step <= self.cfg.steps:
-            # Evaluate agent periodically
-            if self._step % self.cfg.eval_freq == 0:
-                eval_next = True
+        init_reporter("tblogs")
+        with TqdmBar(self.cfg.steps, "total training...") as tbar:
+            while self._step <= self.cfg.steps:
+                # Evaluate agent periodically
+                if self._step % self.cfg.eval_freq == 0:
+                    eval_next = True
 
-            # Reset environment
-            if done:
-                if eval_next:
-                    eval_metrics = self.eval()
-                    eval_metrics.update(self.common_metrics())
-                    self.logger.log(eval_metrics, "eval")
-                    eval_next = False
+                # Reset environment
+                if done:
+                    if eval_next:
+                        eval_metrics = self.eval()
+                        eval_metrics.update(self.common_metrics())
+                        get_reporter().add_scalars(eval_metrics, "eval")
+                        self.logger.log(eval_metrics, "eval")
+                        eval_next = False
 
-                if self._step > 0:
-                    train_metrics.update(
-                        episode_reward=torch.tensor(
-                            [td["reward"] for td in self._tds[1:]]
-                        ).sum(),
-                        episode_success=info["success"],
-                    )
-                    train_metrics.update(self.common_metrics())
+                    if self._step > 0:
+                        train_metrics.update(
+                            episode_reward=torch.tensor(
+                                [td["reward"] for td in self._tds[1:]]
+                            ).sum(),
+                            episode_success=info["success"],
+                        )
+                        train_metrics.update(self.common_metrics())
 
-                    results_metrics = {'return': train_metrics['episode_reward'],
-                                       'episode_length': len(self._tds[1:]),
-                                       'success': train_metrics['episode_success'],
-                                       'success_subtasks': info['success_subtasks'],
-                                       'step': self._step,}
-                
-                    self.logger.log(train_metrics, "train")
-                    self.logger.log(results_metrics, "results")
-                    self._ep_idx = self.buffer.add(torch.cat(self._tds))
+                        results_metrics = {
+                            "return": train_metrics["episode_reward"],
+                            "episode_length": len(self._tds[1:]),
+                            "success": train_metrics["episode_success"],
+                            "success_subtasks": info["success_subtasks"],
+                            "step": self._step,
+                        }
 
-                obs = self.env.reset()[0]
-                self._tds = [self.to_td(obs)]
+                        get_reporter().add_scalars(train_metrics, "train")
+                        get_reporter().add_scalars(results_metrics, "results")
+                        self.logger.log(train_metrics, "train")
+                        self.logger.log(results_metrics, "results")
+                        self._ep_idx = self.buffer.add(torch.cat(self._tds))
 
-            # Collect experience
-            if self._step > self.cfg.seed_steps:
-                action = self.agent.act(obs, t0=len(self._tds) == 1)
-            else:
-                action = self.env.rand_act()
-            obs, reward, done, truncated, info = self.env.step(action)
-            done = done or truncated
-            self._tds.append(self.to_td(obs, action, reward))
+                    obs = self.env.reset()[0]
+                    self._tds = [self.to_td(obs)]
 
-            # Update agent
-            if self._step >= self.cfg.seed_steps:
-                if self._step == self.cfg.seed_steps:
-                    num_updates = self.cfg.seed_steps
-                    print("Pretraining agent on seed data...")
+                # Collect experience
+                if self._step > self.cfg.seed_steps:
+                    action = self.agent.act(obs, t0=len(self._tds) == 1)
                 else:
-                    num_updates = 1
-                for _ in range(num_updates):
-                    _train_metrics = self.agent.update(self.buffer)
-                train_metrics.update(_train_metrics)
+                    action = self.env.rand_act()
+                obs, reward, done, truncated, info = self.env.step(action)
+                done = done or truncated
+                self._tds.append(self.to_td(obs, action, reward))
 
-            self._step += 1
+                # Update agent
+                if self._step >= self.cfg.seed_steps:
+                    if self._step == self.cfg.seed_steps:
+                        num_updates = self.cfg.seed_steps
+                        print("Pretraining agent on seed data...")
+                        for _ in tqdm(range(num_updates), "training with seed data..."):
+                            _train_metrics = self.agent.update(self.buffer)
+                    else:
+                        num_updates = 1
+                        _train_metrics = self.agent.update(self.buffer)
+                    train_metrics.update(_train_metrics)
+
+                self._step += 1
+                tbar.update(1)
 
         self.logger.finish(self.agent)

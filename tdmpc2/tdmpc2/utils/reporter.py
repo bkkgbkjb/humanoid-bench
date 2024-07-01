@@ -2,7 +2,6 @@ from typing import Dict, Any, Optional, Tuple
 from os import path
 from tensorboardX import SummaryWriter
 import numpy as np
-from utils.time import start_time_str
 
 
 class Reporter:

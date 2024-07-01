@@ -1,5 +1,8 @@
 defaults:
     - override hydra/launcher: submitit_local
+hydra:
+  run:
+    dir: ./outputs/${exp_name}_${now:%Y-%m-%d}_${now:%H-%M-%S-%f}
 
 # environment
 task: dog-run

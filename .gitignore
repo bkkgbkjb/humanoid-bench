@@ -13,7 +13,9 @@ logdir
 logs
 models
 outputs
+tmp
 runs
 wandb
 venv
 .vscode
+tblogs
