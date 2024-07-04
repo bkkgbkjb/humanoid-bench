@@ -31,9 +31,9 @@ class TDMPC2:
                 {"params": self.model._reward.parameters()},
                 {"params": self.model._Qs.parameters()},
                 {
-                    "params": self.model._task_emb.parameters()
-                    if self.cfg.multitask
-                    else []
+                    "params": (
+                        self.model._task_emb.parameters() if self.cfg.multitask else []
+                    )
                 },
             ],
             lr=self.cfg.lr,
@@ -54,6 +54,7 @@ class TDMPC2:
             if self.cfg.multitask
             else self._get_discount(cfg.episode_length)
         )
+        self._pi = 0
 
     def _get_discount(self, episode_length):
         """
@@ -178,7 +179,8 @@ class TDMPC2:
             actions[:, : self.cfg.num_pi_trajs] = pi_actions
 
         # Iterate MPPI
-        for _ in range(self.cfg.iterations):
+        _stat_of_ratio = [None for _ in range(self.cfg.iterations)]
+        for _ii in range(self.cfg.iterations):
             # Sample actions
             actions[:, self.cfg.num_pi_trajs :] = (
                 mean.unsqueeze(1)
@@ -198,6 +200,8 @@ class TDMPC2:
             elite_idxs = torch.topk(
                 value.squeeze(1), self.cfg.num_elites, dim=0
             ).indices
+            _pi_selected = (elite_idxs < self.cfg.num_pi_trajs).sum().item()
+            _stat_of_ratio[_ii] = _pi_selected
             elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs]
 
             # Update parameters
@@ -216,6 +220,17 @@ class TDMPC2:
             if self.cfg.multitask:
                 mean = mean * self.model._action_masks[task]
                 std = std * self.model._action_masks[task]
+
+        if eval_mode:
+            print(
+                f"pi_selected_ratio during {'train' if not eval_mode else 'eval'}: {[_s / self.cfg.num_elites for _s in _stat_of_ratio]}"
+            )
+        if not eval_mode:
+            if self._pi % 200 == 0:
+                print(
+                    f"pi_selected_ratio during {'train' if not eval_mode else 'eval'}: {[_s / self.cfg.num_elites for _s in _stat_of_ratio]}"
+                )
+            self._pi += 1
 
         # Select action
         score = score.squeeze(1).cpu().numpy()
