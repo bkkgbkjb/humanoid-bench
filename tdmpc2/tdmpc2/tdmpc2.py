@@ -6,6 +6,29 @@ from tdmpc2.common import math
 from tdmpc2.common.scale import RunningScale
 from tdmpc2.common.world_model import WorldModel
 
+TARGET = {
+    "walk": 700,
+    "crawl": 700,
+    "maze": 1200,
+    "reach": 12000,
+    "pole": 700,
+    "balance_simple": 800,
+    "cube": (370, 500),
+    "sit_hard": 750,
+    "insert_normal": 350,
+}
+TARGET_SCLAE = {
+    "walk": 200,
+    "crawl": 200,
+    "maze": 2 * 200,
+    "reach": 15 * 200,
+    "pole": 200,
+    "balance_simple": 200,
+    "cube": 0.5 * 200,
+    "sit_hard": 200,
+    "insert_normal": 0.45 * 200,
+}
+
 
 class TDMPC2:
     """
@@ -241,7 +264,7 @@ class TDMPC2:
             a += std * torch.randn(self.cfg.action_dim, device=std.device)
         return a.clamp_(-1, 1)
 
-    def update_pi(self, zs, task):
+    def update_pi(self, zs, task, buffer):
         """
         Update policy using a sequence of latent states.
 
@@ -252,6 +275,7 @@ class TDMPC2:
         Returns:
                 float: Loss of the policy update.
         """
+        obs, action, reward = buffer
         self.pi_optim.zero_grad(set_to_none=True)
         self.model.track_q_grad(False)
         _, pis, log_pis, _ = self.model.pi(zs, task)
@@ -259,17 +283,51 @@ class TDMPC2:
         self.scale.update(qs[0])
         qs = self.scale(qs)
 
+        _log_prob_act = self.model.get_log_prob(zs[:-1].detach(), action.detach())
+
+        _target = TARGET[self.cfg.task.split("-")[1]]
+        if isinstance(_target, tuple):
+            _episode_len = _target[1]
+            _target = _target[0]
+        else:
+            _episode_len = 1000
+        assert isinstance(_target, (int, float))
+        _act_weight = (_target - reward * _episode_len).clip(min=0) / TARGET_SCLAE[
+            self.cfg.task.split("-")[1]
+        ]
+
+        # _act_weight = (_act_weight - _act_weight.mean()) / (_act_weight.std() + 1e-6)
+        # _act_weight /= 100
+        _log_prob_act = _log_prob_act.clip(-1e3, 1e3) * _act_weight
+
+        _bc_loss = _log_prob_act.mean(dim=(1, 2)) * torch.pow(
+            self.cfg.rho, torch.arange(len(qs) - 1, device=self.device)
+        )
+        _beta = 5e-4
+
         # Loss is a weighted sum of Q-values
         rho = torch.pow(self.cfg.rho, torch.arange(len(qs), device=self.device))
-        pi_loss = ((self.cfg.entropy_coef * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
-        pi_loss.backward()
+
+        _entropy_loss = (
+            (self.cfg.entropy_coef * log_pis).mean(dim=(1, 2)) * rho
+        ).mean()
+        _q_loss = -(qs.mean(dim=(1, 2)) * rho).mean()
+        _original_loss = _entropy_loss + _q_loss
+        _bc_loss = (_beta * _bc_loss).mean()
+
+        _all_loss = _original_loss + _bc_loss
+        _all_loss.backward()
         torch.nn.utils.clip_grad_norm_(
             self.model._pi.parameters(), self.cfg.grad_clip_norm
         )
         self.pi_optim.step()
         self.model.track_q_grad(True)
 
-        return pi_loss.item()
+        return _all_loss.item(), dict(
+            entropy_loss=_entropy_loss.item(),
+            q_loss=_q_loss.item(),
+            bc_loss=_bc_loss.item(),
+        )
 
     @torch.no_grad()
     def _td_target(self, next_z, reward, task):
@@ -362,7 +420,9 @@ class TDMPC2:
         self.optim.step()
 
         # Update policy
-        pi_loss = self.update_pi(zs.detach(), task)
+        pi_loss, pi_loss_items = self.update_pi(
+            zs.detach(), task, (obs, action, reward)
+        )
 
         # Update target Q-functions
         self.model.soft_update_target_Q()
@@ -377,4 +437,5 @@ class TDMPC2:
             "total_loss": float(total_loss.mean().item()),
             "grad_norm": float(grad_norm),
             "pi_scale": float(self.scale.value),
+            **pi_loss_items,
         }

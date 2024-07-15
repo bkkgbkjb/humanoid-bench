@@ -3,6 +3,8 @@ from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.distributions import Normal
+import torch.nn.functional as F
 
 from tdmpc2.common import layers, math, init
 
@@ -167,6 +169,24 @@ class WorldModel(nn.Module):
         mu, pi, log_pi = math.squash(mu, pi, log_pi)
 
         return mu, pi, log_pi, log_std
+
+    def get_log_prob(self, z, act):
+        act = torch.atanh(act.clip(-0.995, 0.995))
+        # Gaussian policy prior
+        mu, log_std = self._pi(z).chunk(2, dim=-1)
+        log_std = math.log_std(log_std, self.log_std_min, self.log_std_dif)
+        _dist = Normal(mu, log_std.exp())
+        # eps = torch.randn_like(mu)
+
+        # log_pi = math.gaussian_logprob(_eps, log_std, size=None)
+        # pi = mu + eps * log_std.exp()
+        _log_prob = _dist.log_prob(act)
+        # mu, act, log_pi = math.squash(mu, act, log_pi)
+        _log_prob -= torch.log(F.relu(1 - act.tanh().pow(2)) + 1e-6)
+        _log_prob = _log_prob.sum(-1, keepdim=True)
+
+        # return mu, pi, log_pi, log_std
+        return _log_prob
 
     def Q(self, z, a, task, return_type="min", target=False):
         """
