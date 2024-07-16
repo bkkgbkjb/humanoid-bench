@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from tdmpc2.common import math
 from tdmpc2.common.scale import RunningScale
 from tdmpc2.common.world_model import WorldModel
+from tdmpc2.utils.reporter import get_reporter
 
 TARGET = {
     "walk": 700,
@@ -77,6 +78,7 @@ class TDMPC2:
             if self.cfg.multitask
             else self._get_discount(cfg.episode_length)
         )
+        self._update_cnt = 0
         self._pi = 0
 
     def _get_discount(self, episode_length):
@@ -292,18 +294,18 @@ class TDMPC2:
         else:
             _episode_len = 1000
         assert isinstance(_target, (int, float))
-        _act_weight = (_target - reward * _episode_len).clip(min=0) / TARGET_SCLAE[
+        _act_weight = (reward * _episode_len - _target) / TARGET_SCLAE[
             self.cfg.task.split("-")[1]
         ]
 
         # _act_weight = (_act_weight - _act_weight.mean()) / (_act_weight.std() + 1e-6)
         # _act_weight /= 100
-        _log_prob_act = _log_prob_act.clip(-1e3, 1e3) * _act_weight
+        _log_prob_act = _log_prob_act * _act_weight.exp()
 
         _bc_loss = _log_prob_act.mean(dim=(1, 2)) * torch.pow(
             self.cfg.rho, torch.arange(len(qs) - 1, device=self.device)
         )
-        _beta = 5e-4
+        _beta = 0.5 / 3 * self.cfg.our_lambda
 
         # Loss is a weighted sum of Q-values
         rho = torch.pow(self.cfg.rho, torch.arange(len(qs), device=self.device))
@@ -315,7 +317,7 @@ class TDMPC2:
         _original_loss = _entropy_loss + _q_loss
         _bc_loss = (_beta * _bc_loss).mean()
 
-        _all_loss = _original_loss + _bc_loss
+        _all_loss = _original_loss - _bc_loss
         _all_loss.backward()
         torch.nn.utils.clip_grad_norm_(
             self.model._pi.parameters(), self.cfg.grad_clip_norm
@@ -323,6 +325,17 @@ class TDMPC2:
         self.pi_optim.step()
         self.model.track_q_grad(True)
 
+        if self._update_cnt % 10 == 0:
+            get_reporter().add_scalars(
+                dict(
+                    all_loss=_all_loss.item(),
+                    entropy_loss=_entropy_loss.item(),
+                    q_loss=_q_loss.item(),
+                    bc_loss=_bc_loss.item(),
+                ),
+                "train/pi",
+            )
+        self._update_cnt += 1
         return _all_loss.item(), dict(
             entropy_loss=_entropy_loss.item(),
             q_loss=_q_loss.item(),
