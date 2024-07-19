@@ -12,6 +12,7 @@ obs: state
 checkpoint: ???
 eval_episodes: 1
 eval_freq: 50000
+save_times: 4
 
 # training
 steps: 10_000_000

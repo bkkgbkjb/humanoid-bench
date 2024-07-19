@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from tensordict.tensordict import TensorDict
 
+from pathlib import Path
+from hydra.core.hydra_config import HydraConfig
 from tdmpc2.trainer.base import Trainer
 from tdmpc2.utils.progress import TqdmBar, tqdm
 from tdmpc2.utils.reporter import init_reporter, get_reporter
@@ -73,10 +75,18 @@ class OnlineTrainer(Trainer):
 
     def train(self):
         """Train a TD-MPC2 agent."""
+        output_dir = HydraConfig.get().runtime.output_dir
         train_metrics, done, eval_next = {}, True, True
         init_reporter("tblogs")
+        assert self.cfg.steps % self.cfg.save_times == 0
+        _save_every = int(self.cfg.steps / self.cfg.save_times)
         with TqdmBar(self.cfg.steps, "total training...") as tbar:
             while self._step <= self.cfg.steps:
+                if self._step % _save_every == 0:
+                    print("ready to save")
+                    Path(f"{output_dir}/models/save").mkdir(exist_ok=True, parents=True)
+                    self.agent.save(f"{output_dir}/models/save/{self._step}.pth")
+
                 # Evaluate agent periodically
                 if self._step % self.cfg.eval_freq == 0:
                     eval_next = True
