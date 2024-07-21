@@ -343,8 +343,15 @@ class TDMPC2:
         ]
 
         # _act_weight = (_act_weight - _act_weight.mean()) / (_act_weight.std() + 1e-6)
+        _act_weight = _act_weight.clip(max=8).exp()
+
+        _act_weight_mean = _act_weight.mean().item()
+        _act_weight_std = _act_weight.std().item()
+        _log_prob_mean = _log_prob_act.mean().item()
+        _log_prob_std = _log_prob_act.std().item()
+
         # _act_weight /= 100
-        _log_prob_act = _log_prob_act * _act_weight.exp()
+        _log_prob_act = _log_prob_act * _act_weight  # .clip(max=8).exp()
 
         _bc_loss = _log_prob_act.mean(dim=(1, 2)) * torch.pow(
             self.cfg.rho, torch.arange(len(qs) - 1, device=self.device)
@@ -368,6 +375,17 @@ class TDMPC2:
         )
         self.pi_optim.step()
         self.model.track_q_grad(True)
+
+        if self._update_cnt % 5 == 0:
+            get_reporter().add_scalars(
+                dict(
+                    act_weight_mean=_act_weight_mean,
+                    act_weight_std=_act_weight_std,
+                    log_prob_mean=_log_prob_mean,
+                    log_prob_std=_log_prob_std,
+                ),
+                "train/pi",
+            )
 
         if self._update_cnt % 10 == 0:
             get_reporter().add_scalars(
